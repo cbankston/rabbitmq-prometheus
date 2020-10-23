@@ -115,10 +115,6 @@
         {2, undefined, connection_channels, gauge, "Channels on a connection", channels}
     ]},
 
-    {channel_queue_exchange_metrics, [
-        {2, undefined, queue_messages_published_total, counter, "Total number of messages published to queues"}
-    ]},
-
     {node_coarse_metrics, [
         {2, undefined, process_open_fds, gauge, "Open file descriptors", fd_used},
         {2, undefined, process_open_tcp_sockets, gauge, "Open TCP sockets", sockets_used},
@@ -197,8 +193,11 @@
         {2, undefined, queue_messages_paged_out_bytes, gauge, "Size in bytes of messages paged out to disk", message_bytes_paged_out},
         {2, undefined, queue_disk_reads_total, counter, "Total number of times queue read messages from disk", disk_reads},
         {2, undefined, queue_disk_writes_total, counter, "Total number of times queue wrote messages to disk", disk_writes}
-    ]}
+    ]},
 
+    {queue_stats_publish, [
+        {2, undefined, queue_messages_published_total, counter, "Total number of messages published to queues"}
+    ]}
 ]).
 
 -define(TOTALS, [
@@ -459,6 +458,31 @@ get_data(Table, false) when Table == channel_exchange_metrics;
         _ ->
             [Result]
     end;
+get_data(Table, false) when Table == queue_stats_publish ->
+    Policies = rabbit_mgmt_agent_config:get_env(sample_retention_policies, []),
+    TablePolicies = proplists:get_value(basic, Policies),
+    [SampleInterval | _] = lists:sort([I || {_, I} <- TablePolicies]),
+    Result = ets:foldl(fun({{_, Interval}, Slide}, {T, A1}) ->
+                  case Interval of
+                    SampleInterval ->
+                      {Last} = exometer_slide:last(Slide),
+                      {T, Last + A1};
+                    _Else -> {T, A1}
+                  end
+                end, empty(Table), Table),
+    [Result];
+get_data(Table, true) when Table == queue_stats_publish ->
+    Policies = rabbit_mgmt_agent_config:get_env(sample_retention_policies, []),
+    TablePolicies = proplists:get_value(basic, Policies),
+    [SampleInterval | _] = lists:sort([I || {_, I} <- TablePolicies]),
+    ets:foldl(fun({{Resource, Interval}, Slide}, Acc) ->
+      case Interval of
+        SampleInterval ->
+          {Last} = exometer_slide:last(Slide),
+          [{Resource, Last} | Acc];
+        _Else -> Acc
+      end
+    end, [], Table);
 get_data(Table, _) ->
     ets:tab2list(Table).
 
@@ -470,7 +494,7 @@ division(A, B) ->
 accumulate_count_and_sum(Value, {Count, Sum}) ->
     {Count + 1, Sum + Value}.
 
-empty(T) when T == channel_queue_exchange_metrics; T == channel_process_metrics ->
+empty(T) when T == channel_queue_exchange_metrics; T == channel_process_metrics; T == queue_stats_publish ->
     {T, 0};
 empty(T) when T == connection_coarse_metrics ->
     {T, 0, 0, 0};
